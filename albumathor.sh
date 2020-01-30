@@ -121,7 +121,7 @@ exists_file(){
     return 0
 }
 
-insert_tuple (){
+insert (){
     local tuple="$1"
     local bytesize="$2"
     local sum="$3"
@@ -160,15 +160,19 @@ reverse_geocoding (){
     URL="https://eu1.locationiq.com/v1/reverse.php?key=$TOKEN&lat=$latitude&lon=$longitude&format=json"
     local out=$(sqlite3 -batch $GPS_FILE "select city,state,country,suburb,postcode from $GPS_TABLE where latitude='$latitude' and longitude='$longitude';")
     if [ -z "$out" ]; then
-        local address=$(wget -q -O - "$URL")
+    	# TODO: Duplicate every single quote before save in DB!
+    	# match single quotes (?<!')'(?!')
+        local address=$(wget -q -O - "$URL" | perl -pe 's/(?<!'"')'("'?!'"')/''/g")
         #We must ensure that any subsequent call won't exceed the allowed usage
         #Normally 1 query per second (locationiq.com allows 2 per second)
         sleep 1
+        
         country=$(echo $address | jq -r '.address.country')
         state=$(echo $address | jq -r '.address.state')
         city=$(echo $address | jq -r '.address.city')
         suburb=$(echo $address | jq -r '.address.suburb')
         postcode=$(echo $address | jq -r '.address.postcode')
+        
         [[ $city == null ]] && city=$(echo $address | jq -r '.address.village')
         [[ $city == null ]] && city=$(echo $address | jq -r '.address.town')
         sqlite3 -batch $GPS_FILE "pragma busy_timeout=2000; insert or ignore into $GPS_TABLE values('$latitude','$longitude','$address','$city','$state','$country','$suburb','$postcode');"
@@ -265,7 +269,7 @@ if [ -d "$path" ]; then
         if exists_checksum fotos $sum ;then continue ;fi
         tuple=$(exiftool -f -c '%.6f' -p $FORMAT "$file")
         tuple="\"$file\",$tuple"
-        insert_tuple "$tuple" $bytesize "$sum"
+        insert "$tuple" $bytesize "$sum"
         echo $?
     done < <(find "$path" -type f  -print0)
 elif [ -f "$path" ];then
@@ -280,7 +284,7 @@ elif [ -f "$path" ];then
 
     tuple=$(exiftool -f -c '%.6f' -p $FORMAT "$file")
     tuple="\"$file\",$tuple"
-    insert_tuple "$tuple" $bytesize "$sum"
+    insert "$tuple" $bytesize "$sum"
     echo $?
 fi
 
