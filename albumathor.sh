@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS '$LOCATIONS_TABLE' (
     'country' TEXT,
     'suburb' TEXT,
     'postcode' TEXT,
+    'display' TEXT,
     'BLAKE2' TEXT NOT NULL PRIMARY KEY,
     FOREIGN KEY (BLAKE2) REFERENCES $MAIN_TABLE (BLAKE2)
             ON DELETE CASCADE ON UPDATE NO ACTION
@@ -95,6 +96,21 @@ CREATE TABLE IF NOT EXISTS '$GPS_TABLE' (
     'COUNTRY' TEXT,
     'SUBURB' TEXT,
     'POSTCODE' TEXT
+);
+COMMIT;
+EOF
+}
+create_album_table(){
+    sqlite3 $DB_FILE <<EOF
+
+BEGIN TRANSACTION;
+CREATE TABLE IF NOT EXISTS '$ALBUM_TABLE' (
+    'NAME' TEXT NOT NULL,
+    'DATE1' TEXT NOT NULL,
+    'DATE2' TEXT,
+    'BLAKE2' TEXT NOT NULL PRIMARY KEY,
+    FOREIGN KEY (BLAKE2) REFERENCES $MAIN_TABLE (BLAKE2)
+            ON DELETE CASCADE ON UPDATE NO ACTION
 );
 COMMIT;
 EOF
@@ -143,9 +159,10 @@ EOF
 time_difference (){
     # returns time difference in minutes
     local MPHR=60    # Minutes per hour.
-    local A=$(date +%s -d "$1")
-    local B=$(date +%s -d "$2")
-    return $(( ($A - $B) / $MPHR ))
+    local A=$(date -d "$1" +%s)
+    local B=$(date -d "$2" +%s)
+
+    return $(( ($A - $B) / $MPHR )) | tr -d "-"
 }
 
 reverse_geocoding (){
@@ -160,8 +177,8 @@ reverse_geocoding (){
     URL="https://eu1.locationiq.com/v1/reverse.php?key=$TOKEN&lat=$latitude&lon=$longitude&format=json"
     local out=$(sqlite3 -batch $GPS_FILE "select city,state,country,suburb,postcode from $GPS_TABLE where latitude='$latitude' and longitude='$longitude';")
     if [ -z "$out" ]; then
-    	# TODO: Duplicate every single quote before save in DB!
-    	# match single quotes (?<!')'(?!')
+        # TODO: Duplicate every single quote before save in DB!
+        # match single quotes (?<!')'(?!')
         local address=$(wget -q -O - "$URL" | perl -pe 's/(?<!'"')'("'?!'"')/''/g")
         #We must ensure that any subsequent call won't exceed the allowed usage
         #Normally 1 query per second (locationiq.com allows 2 per second)
@@ -187,10 +204,17 @@ reverse_geocoding (){
         postcode="${tuple[4]}"
     fi
 }
+
 update_locations (){
     local line
     local tuple
-    local results=$(sqlite3 -batch $DB_FILE "select GPSLatitude,GPSLongitude,BLAKE2 from $MAIN_TABLE where GPSLatitude not like '-' ;")
+    #local results=$(sqlite3 -batch $DB_FILE "select GPSLatitude,GPSLongitude,BLAKE2 from $MAIN_TABLE where GPSLatitude not like '-' ;")
+    local results=$(sqlite3 -batch $DB_FILE "select GPSLatitude,GPSLongitude,BLAKE2 from $MAIN_TABLE where GPSLatitude not like '-' AND BLAKE2 not in (select blake2 from $LOCATIONS_TABLE);")
+    
+    #alternatively select only those which:
+    # - have GPS metadata
+    # - don't have an entry in locations
+    #select GPSLatitude,GPSLongitude,BLAKE2 from fotos where GPSLatitude not like '-' AND BLAKE2 not IN (SELECT BLAKE2 FROM locations);
     while read line; do
     echo $line
         IFS='|' read -ra tuple <<< "$line"
@@ -229,6 +253,76 @@ EOF
 # UPDATE players SET user_name='steven', age=32 WHERE user_name='steven';
 }
 
+create_album (){
+# select * from fotos Where CreateDate not like '-' order by CreateDate ASC;
+
+# select f.CreateDate,l.* from fotos f,locations l Where CreateDate not like '-' AND f.BLAKE2=l.BLAKE2 order by CreateDate ASC;
+    local offset=0
+    local batch=200
+    local results=""
+    while 
+	results=$(sqlite3 -batch $DB_FILE "select f.CreateDate,l.* from fotos f,locations l Where CreateDate not like '-' AND f.BLAKE2=l.BLAKE2 order by CreateDate ASC limit $batch offset $offset;")
+        offset=$(( $offset + $batch ))
+	[ -n "$results" ]
+    do
+
+        local current_date
+        local old_date
+	local diff=$(( $DIFFERENCE + 1 ))
+
+        while read line;do
+            IFS='|' read -ra tuple <<< "$line"
+            local current_date=${tuple[0]}
+            local city=${tuple[1]}
+            local state=${tuple[2]}
+            local country=${tuple[3]}
+            local suburb=${tuple[4]}
+            local postcode=${tuple[5]}
+            #local display=${tuple[6]}
+            local blake2=${tuple[6]}
+	    [ -n "$old_date" ] && diff=$(time_difference "$old_date" "$current_date")
+            if [ $diff -gt $DIFFERENCE ];then 
+                echo new album
+            else
+                echo insert in same album
+            fi
+            old_date=$current_date
+        done <<< "$results"
+    done
+
+}
+usage(){
+    cat <<EOF
+
+albumathor
+----------
+Creates stupid albums according to predefined rules. 
+
+It Uses GPS coordinates from EXIF metadata (if available) to better determine which photos can go together. It needs an API token from a third-party reverse geocoding service (locationiq.com) to get human-readable locations. 
+
+Usage
+-----
+
+Create initial DB:
+albumathor.sh <PATH>
+
+Generate locations:
+albumathor -gps
+
+Create albums (only in DB):
+albumathor -thor
+
+Create albums (symlink):
+albumathor -thor -s
+
+Create albums (hardlink):
+albumathor -thor -h
+
+Create albums (copy):
+albumathor -thor -c
+
+EOF
+}
 # Execution Starts here
 # ---------------------
 
@@ -237,15 +331,25 @@ GPS_FILE=$HOME/.config/albumathor/gps-cache.db
 CONFIG_FILE=$HOME/.config/albumathor/albumathor.conf
 FAST=1
 MAIN_TABLE=fotos
+ALBUM_TABLE=albums
 LOCATIONS_TABLE=locations
 GPS_TABLE=gps
 FORMAT=$HOME/.config/albumathor/format.fmt
+DIFFERENCE=300
 [ -f $HOME/.config/albumathor/albumathor.conf ] && source $HOME/.config/albumathor/albumathor.conf
 
 case $1 in
     -gps)
         update_locations
         exit
+        ;;
+    -thor)
+        create_album
+        exit
+        ;;
+    *)
+        usage
+        exit 1
         ;;
 esac
 
@@ -267,7 +371,8 @@ if [ -d "$path" ]; then
         fi
         sum=$(b2sum "$file" | cut -f 1 -d " ")
         if exists_checksum fotos $sum ;then continue ;fi
-        tuple=$(exiftool -f -c '%.6f' -p $FORMAT "$file")
+        #tuple=$(exiftool -f -d "%Y-%m-%d %H:%M:%S" -c '%.6f' -p $FORMAT "$file")
+        tuple=$(exiftool -f -d "%s" -c '%.6f' -p $FORMAT "$file")
         tuple="\"$file\",$tuple"
         insert "$tuple" $bytesize "$sum"
         echo $?
@@ -282,9 +387,13 @@ elif [ -f "$path" ];then
     sum=$(b2sum "$file" | cut -f 1 -d " ")
     if exists_checksum fotos $sum ;then continue ;fi
 
-    tuple=$(exiftool -f -c '%.6f' -p $FORMAT "$file")
+    tuple=$(exiftool -f -d "%s" -c '%.6f' -p $FORMAT "$file")
     tuple="\"$file\",$tuple"
     insert "$tuple" $bytesize "$sum"
     echo $?
+else
+    usage
+    exit 1
 fi
+
 
