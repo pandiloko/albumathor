@@ -158,11 +158,11 @@ EOF
 
 time_difference (){
     # returns time difference in minutes
-    local MPHR=60    # Minutes per hour.
-    local A=$(date -d "$1" +%s)
-    local B=$(date -d "$2" +%s)
-
-    return $(( ($A - $B) / $MPHR )) | tr -d "-"
+    #SHOULD BE Epoch
+    local C=$(( $1 - $2 ))
+    local C=$(( $C / 60 ))
+    local D=$(echo $C | tr -d "-")
+    echo $D
 }
 
 reverse_geocoding (){
@@ -175,7 +175,7 @@ reverse_geocoding (){
     { [[ ${latitude[1]} == S ]] && latitude=-${latitude[0]} ;} || latitude=${latitude[0]}
     { [[ ${longitude[1]} == W ]] && longitude=-${longitude[0]} ;} || longitude=${longitude[0]}
     URL="https://eu1.locationiq.com/v1/reverse.php?key=$TOKEN&lat=$latitude&lon=$longitude&format=json"
-    local out=$(sqlite3 -batch $GPS_FILE "select city,state,country,suburb,postcode from $GPS_TABLE where latitude='$latitude' and longitude='$longitude';")
+    local out=$(sqlite3 -batch $GPS_FILE "select city,state,country,suburb,postcode from $GPS_TABLE where latitude='$latitude' and longitude='$longitude';")|perl -pe 's/(?<!'"')'("'?!'"')/''/g"
     if [ -z "$out" ]; then
         # TODO: Duplicate every single quote before save in DB!
         # match single quotes (?<!')'(?!')
@@ -189,10 +189,11 @@ reverse_geocoding (){
         city=$(echo $address | jq -r '.address.city')
         suburb=$(echo $address | jq -r '.address.suburb')
         postcode=$(echo $address | jq -r '.address.postcode')
+	display=$(echo $address | jq -r '.display_name')
         
         [[ $city == null ]] && city=$(echo $address | jq -r '.address.village')
         [[ $city == null ]] && city=$(echo $address | jq -r '.address.town')
-        sqlite3 -batch $GPS_FILE "pragma busy_timeout=2000; insert or ignore into $GPS_TABLE values('$latitude','$longitude','$address','$city','$state','$country','$suburb','$postcode');"
+        sqlite3 -batch $GPS_FILE "pragma busy_timeout=2000; insert or ignore into $GPS_TABLE values('$latitude','$longitude','$address','$city','$state','$country','$suburb','$postcode','$display');"
     else
         #select
         local tuple
@@ -261,7 +262,7 @@ create_album (){
     local batch=200
     local results=""
     while 
-	results=$(sqlite3 -batch $DB_FILE "select f.CreateDate,l.* from fotos f,locations l Where CreateDate not like '-' AND f.BLAKE2=l.BLAKE2 order by CreateDate ASC limit $batch offset $offset;")
+	results=$(sqlite3 -batch $DB_FILE "select f.CreateDate,l.city,l.state,l.country,l.suburb,l.postcode,l.blake2 from fotos f,locations l Where CreateDate not like '-' AND f.BLAKE2=l.BLAKE2 order by CreateDate ASC limit $batch offset $offset;")
         offset=$(( $offset + $batch ))
 	[ -n "$results" ]
     do
@@ -280,11 +281,13 @@ create_album (){
             local postcode=${tuple[5]}
             #local display=${tuple[6]}
             local blake2=${tuple[6]}
-	    [ -n "$old_date" ] && diff=$(time_difference "$old_date" "$current_date")
+	    if [ -n "$old_date" ];then
+                diff=$(time_difference "$old_date" "$current_date")
+	    fi
             if [ $diff -gt $DIFFERENCE ];then 
-                echo new album
-            else
-                echo insert in same album
+		    echo NEW album. Name: $(date -d @$current_date +'%Y%m%d_' ) $suburb $city $state $country
+            #else
+                #echo INSERT in same album. Name: $current_date $suburb $city $state $country
             fi
             old_date=$current_date
         done <<< "$results"
