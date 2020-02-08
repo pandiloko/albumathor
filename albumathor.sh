@@ -156,6 +156,14 @@ EOF
     fi
 }
 
+
+difference (){
+    # returns time difference in minutes
+    #SHOULD BE Epoch
+    local C=$(( $1 - $2 ))
+    local D=$(echo $C | tr -d "-")
+    echo $D
+}
 time_difference (){
     # returns time difference in minutes
     #SHOULD BE Epoch
@@ -165,15 +173,25 @@ time_difference (){
     echo $D
 }
 
+dmg2dd_lat(){
+    local latitude=( $1 )
+    { [[ ${latitude[1]} == S ]] && latitude=-${latitude[0]} ;} || latitude=${latitude[0]}
+    echo $latitude
+}
+
+dmg2dd_long(){
+    local longitude=( $1 )
+    { [[ ${longitude[1]} == W ]] && longitude=-${longitude[0]} ;} || longitude=${longitude[0]}
+    echo $longitude
+}
+
 reverse_geocoding (){
     # $! -> Latitude
     # $! -> Longitude
     # GET https://eu1.locationiq.com/v1/reverse.php?key=YOUR_PRIVATE_TOKEN&lat=LATITUDE&lon=LONGITUDE&format=json
     # fills global vars if possible (city,country,state,suburb,postcode)
-    local latitude=( $1 )
-    local longitude=( $2 )
-    { [[ ${latitude[1]} == S ]] && latitude=-${latitude[0]} ;} || latitude=${latitude[0]}
-    { [[ ${longitude[1]} == W ]] && longitude=-${longitude[0]} ;} || longitude=${longitude[0]}
+    local latitude=$(dmg2dd_lat "$1")
+    local longitude=$(dmg2dd_long "$2")
     URL="https://eu1.locationiq.com/v1/reverse.php?key=$TOKEN&lat=$latitude&lon=$longitude&format=json"
     local out=$(sqlite3 -batch $GPS_FILE "select city,state,country,suburb,postcode from $GPS_TABLE where latitude='$latitude' and longitude='$longitude';")|perl -pe 's/(?<!'"')'("'?!'"')/''/g"
     if [ -z "$out" ]; then
@@ -189,7 +207,7 @@ reverse_geocoding (){
         city=$(echo $address | jq -r '.address.city')
         suburb=$(echo $address | jq -r '.address.suburb')
         postcode=$(echo $address | jq -r '.address.postcode')
-	display=$(echo $address | jq -r '.display_name')
+    display=$(echo $address | jq -r '.display_name')
         
         [[ $city == null ]] && city=$(echo $address | jq -r '.address.village')
         [[ $city == null ]] && city=$(echo $address | jq -r '.address.town')
@@ -254,6 +272,27 @@ EOF
 # UPDATE players SET user_name='steven', age=32 WHERE user_name='steven';
 }
 
+longest_common_substring(){
+    if ((${#1}>${#2})); then
+       long=$1 short=$2
+    else
+       long=$2 short=$1
+    fi
+    
+    lshort=${#short}
+    score=0
+    for ((i=0;i<lshort-score;++i)); do
+       for ((l=score+1;l<=lshort-i;++l)); do
+          sub=${short:i:l}
+          [[ $long != *$sub* ]] && break
+          subfound=$sub score=$l
+       done
+    done
+    
+    if ((score)); then
+       echo "$subfound"
+    fi
+}
 create_album (){
 # select * from fotos Where CreateDate not like '-' order by CreateDate ASC;
 
@@ -261,39 +300,121 @@ create_album (){
     local offset=0
     local batch=200
     local results=""
+    local current_date
+    local old_date
+    local diff=$(( $DIFFERENCE + 1 ))
+    
+    local blake2=""
+    local city=""
+    local country=""
+    local display=""
+    local postcode=""
+    local state=""
+    local longitude=""
+    local latitude=""
+    local suburb=""
+    local old_blake2=""
+    local old_city=""
+    local old_country=""
+    local old_display=""
+    local old_postcode=""
+    local old_state=""
+    local old_suburb=""
+    local old_longitude=""
+    local old_latitude=""
+    local new=""
+    local lcs=""
+    
     while 
-	results=$(sqlite3 -batch $DB_FILE "select f.CreateDate,l.city,l.state,l.country,l.suburb,l.postcode,l.blake2 from fotos f,locations l Where CreateDate not like '-' AND f.BLAKE2=l.BLAKE2 order by CreateDate ASC limit $batch offset $offset;")
+    results=$(sqlite3 -batch $DB_FILE "select f.CreateDate,l.city,l.state,l.country,l.suburb,l.postcode,l.blake2,f.GPSLatitude,f.GPSLongitude from fotos f,locations l Where CreateDate not like '-' AND f.BLAKE2=l.BLAKE2 order by CreateDate ASC limit $batch offset $offset;")
         offset=$(( $offset + $batch ))
-	[ -n "$results" ]
+    [ -n "$results" ]
     do
 
-        local current_date
-        local old_date
-	local diff=$(( $DIFFERENCE + 1 ))
-
         while read line;do
+            echo "$line"
             IFS='|' read -ra tuple <<< "$line"
-            local current_date=${tuple[0]}
-            local city=${tuple[1]}
-            local state=${tuple[2]}
-            local country=${tuple[3]}
-            local suburb=${tuple[4]}
-            local postcode=${tuple[5]}
-            #local display=${tuple[6]}
-            local blake2=${tuple[6]}
-	    if [ -n "$old_date" ];then
+            current_date=${tuple[0]}
+            city=${tuple[1]}
+            state=${tuple[2]}
+            country=${tuple[3]}
+            suburb=${tuple[4]}
+            postcode=${tuple[5]}
+            # display=${tuple[6]}
+            blake2=${tuple[6]}
+            latitude=${tuple[7]}
+            longitude=${tuple[8]}
+                
+            new=0
+            if [ -n "$old_date" ];then
                 diff=$(time_difference "$old_date" "$current_date")
-	    fi
-            if [ $diff -gt $DIFFERENCE ];then 
-		    echo NEW album. Name: $(date -d @$current_date +'%Y%m%d_' ) $suburb $city $state $country
-            #else
-                #echo INSERT in same album. Name: $current_date $suburb $city $state $country
             fi
+            if [ $diff -gt $DIFFERENCE ];then 
+                new=1
+            fi
+            if [[ $country == $old_country ]] && [[ $state == $old_state ]] ;then
+                new=0
+            fi
+            if [[ $postcode != "null" ]] && [[ $old_postcode != "null" ]] &&  [ $(difference $postcode $old_postcode) -lt 5 ];then
+                new=0
+            fi
+            if [ -n "$latitude" ] && [ -n "$longitude ] &&  [ -n "$old_latitude" ] && [ -n "$old_longitude ] && \
+               [[ "$latitude" != "-" ]] && [[ "$longitude" != "-" ]] && [[ "$old_latitude" != "-" ]] && [[ "$old_longitude" != "-" ]];then
+                latitude=$(dmg2dd_lat "$latitude")
+                longitude=$(dmg2dd_long "$longitude")
+
+                if [ $(distance $latitude $longitude $old_latitude $old_longitude ) -lt 10 ];then
+                    new=0
+                fi
+            fi
+            if [ $new -eq 1 ];then
+                echo NEW album. Name: $(date -d @$current_date +'%Y%m%d_' ) $suburb $city: $state, $country
+                old_blake2=$blake2
+                old_city=$city
+                old_country=$country
+                old_display=$display
+                old_postcode=$postcode
+                old_state=$state
+                old_suburb=$suburb
+                lcs=""
+            else
+                # if [ -n "$lcs" ];then
+                # lcs=$(longest_common_substring "$suburb $city: $state, $country" "$lcs")
+                # else
+                #        lcs="$suburb $city: $state, $country"
+                # fi
+                echo  "   - $(date -d @$current_date +'%Y%m%d_' ) $suburb $city: $state, $country $lcs"
+            fi
+            old_latitude=$latitude
+            old_longitude=$longitude
             old_date=$current_date
         done <<< "$results"
     done
-
 }
+
+distance (){
+t=$(awk -v la1="$1"  -v lo1="$2" -v la2="$3"  -v lo2="$4" 'BEGIN{
+    D2R=0.017453292519943295
+    earth=6371
+
+    dLa=(la2-la1)*D2R
+    dLo=(lo2-lo1)*D2R
+    la1r=(la1*D2R)
+    la2r=(la2*D2R)
+
+
+    a=sin(dLa/2)*sin(dLa/2)+sin(dLo/2)*sin(dLo/2)*cos(la1r)*cos(la2r)
+    c=2*atan2(sqrt(a),sqrt(1-a))
+    result=earth*c
+    print result
+}'
+
+)
+#echo $t
+#echo truncated:
+printf %.0f "$t"
+}
+
 usage(){
     cat <<EOF
 
@@ -339,8 +460,8 @@ LOCATIONS_TABLE=locations
 GPS_TABLE=gps
 FORMAT=$HOME/.config/albumathor/format.fmt
 DIFFERENCE=300
-[ -f $HOME/.config/albumathor/albumathor.conf ] && source $HOME/.config/albumathor/albumathor.conf
 
+[ -f $HOME/.config/albumathor/albumathor.conf ] && source $HOME/.config/albumathor/albumathor.conf
 case $1 in
     -gps)
         update_locations
