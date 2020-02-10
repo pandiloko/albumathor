@@ -193,7 +193,7 @@ reverse_geocoding (){
     local latitude=$(dmg2dd_lat "$1")
     local longitude=$(dmg2dd_long "$2")
     URL="https://eu1.locationiq.com/v1/reverse.php?key=$TOKEN&lat=$latitude&lon=$longitude&format=json"
-    local out=$(sqlite3 -batch $GPS_FILE "select city,state,country,suburb,postcode from $GPS_TABLE where latitude='$latitude' and longitude='$longitude';")|perl -pe 's/(?<!'"')'("'?!'"')/''/g"
+    local out=$(sqlite3 -batch $GPS_FILE "select city,state,country,suburb,postcode,display from $GPS_TABLE where latitude='$latitude' and longitude='$longitude';")|perl -pe 's/(?<!'"')'("'?!'"')/''/g"
     if [ -z "$out" ]; then
         # TODO: Duplicate every single quote before save in DB!
         # match single quotes (?<!')'(?!')
@@ -207,7 +207,7 @@ reverse_geocoding (){
         city=$(echo $address | jq -r '.address.city')
         suburb=$(echo $address | jq -r '.address.suburb')
         postcode=$(echo $address | jq -r '.address.postcode')
-    display=$(echo $address | jq -r '.display_name')
+        display=$(echo $address | jq -r '.display_name')
         
         [[ $city == null ]] && city=$(echo $address | jq -r '.address.village')
         [[ $city == null ]] && city=$(echo $address | jq -r '.address.town')
@@ -216,11 +216,12 @@ reverse_geocoding (){
         #select
         local tuple
         IFS='|' read -ra tuple <<< "$out"
-        state="${tuple[0]}"
-        city="${tuple[1]}"
+        city="${tuple[0]}"
+        state="${tuple[1]}"
         country="${tuple[2]}"
         suburb="${tuple[3]}"
         postcode="${tuple[4]}"
+        display="${tuple[5]}"
     fi
 }
 
@@ -244,17 +245,17 @@ update_locations (){
         reverse_geocoding "$latitude" "$longitude"
         if exists_checksum $LOCATIONS_TABLE $blake2 ;then
             echo update
-            echo "UPDATE $LOCATIONS_TABLE SET city='$city',state='$state',country='$country',suburb='$suburb',postcode='$postcode' where blake2='$blake2';"
+            echo "UPDATE $LOCATIONS_TABLE SET city='$city',state='$state',country='$country',suburb='$suburb',postcode='$postcode',display='$display' where blake2='$blake2';"
             sqlite3 -batch $DB_FILE <<EOF
 pragma busy_timeout=20000;
-UPDATE $LOCATIONS_TABLE SET city='$city',state='$state',country='$country',suburb='$suburb',postcode='$postcode' where blake2='$blake2';
+UPDATE $LOCATIONS_TABLE SET city='$city',state='$state',country='$country',suburb='$suburb',postcode='$postcode',display='$display' where blake2='$blake2';
 EOF
         else
             echo insert
-            echo "insert or ignore into $LOCATIONS_TABLE values('$city','$state','$country','$suburb','$postcode','$blake2');"
+            echo "insert or ignore into $LOCATIONS_TABLE values('$city','$state','$country','$suburb','$postcode','$display','$blake2');"
             sqlite3 -batch $DB_FILE <<EOF
 pragma busy_timeout=20000;
-insert or ignore into $LOCATIONS_TABLE values('$city','$state','$country','$suburb','$postcode','$blake2');
+insert or ignore into $LOCATIONS_TABLE values('$city','$state','$country','$suburb','$postcode','$display','$blake2');
 EOF
         fi
     done <<< "$results"
