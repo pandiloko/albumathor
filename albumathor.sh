@@ -88,6 +88,19 @@ CREATE TABLE IF NOT EXISTS '$ALBUM_TABLE' (
 COMMIT;
 EOF
 }
+recreate_album_table(){
+
+    sqlite3 $ALBUM_FILE <<EOF
+
+BEGIN TRANSACTION;
+DROP TABLE IF EXISTS $ALBUM_TABLE;
+CREATE TABLE IF NOT EXISTS '$ALBUM_TABLE' (
+    'NAME' TEXT NOT NULL,
+    'ALBUMID' INTEGER PRIMARY KEY
+);
+COMMIT;
+EOF
+}
 
 create_gps_cache(){
     sqlite3 $GPS_FILE <<EOF
@@ -203,7 +216,7 @@ reverse_geocoding (){
         [[ $city == null ]] && city=$(echo $address | jq -r '.address.village')
         [[ $city == null ]] && city=$(echo $address | jq -r '.address.town')
         sqlite3 -batch $GPS_FILE "pragma busy_timeout=2000; insert or ignore into $GPS_TABLE values('$latitude','$longitude','$address','$city','$state','$country','$suburb','$postcode','$display');"
-    echo CACHE
+    #echo METAL
     else
         #select
         local tuple
@@ -214,7 +227,7 @@ reverse_geocoding (){
         suburb="${tuple[3]}"
         postcode="${tuple[4]}"
         display="${tuple[5]}"
-    echo METAL
+    #echo CACHE
     fi
 }
 
@@ -319,6 +332,8 @@ create_album (){
     local old_latitude=""
     local new=""
     local lcs=""
+    local album_name=""
+    local current_albumid=""
 
     while
         results=$(sqlite3 -batch $DB_FILE "select f.CreateDate,l.city,l.state,l.country,l.suburb,l.postcode,l.blake2,f.GPSLatitude,f.GPSLongitude from fotos f,locations l Where CreateDate not like '-' AND f.BLAKE2=l.BLAKE2 order by CreateDate ASC limit $batch offset $offset;")
@@ -370,8 +385,20 @@ create_album (){
             fi
 
             if [ $new -eq 1 ];then
-                echo NEW album. Name: $(date -d @$current_date +'%Y%m%d_' ) $suburb $city: $state, $country
-                old_blake2=$blake2
+                #clean album name (no nulls)
+                local valid_names=()
+                [[ $suburb != "null" ]]  && [[ $suburb != "-" ]]  && valid_names+=( $suburb )
+                [[ $city != "null" ]]    && [[ $city != "-" ]]    && valid_names+=( $city )
+                [[ $state != "null" ]]   && [[ $state != "-" ]]   && valid_names+=( $state )
+                [[ $country != "null" ]] && [[ $country != "-" ]] && valid_names+=( ${country^^} )
+
+                album_name=$(date -d @$current_date +'%Y%m%d_' )$(join_by ", " "${valid_names[@]}")
+
+                echo NEW album:  $album_name
+                sqlite3 -batch $DB_FILE "pragma busy_timeout=2000; insert into $ALBUM_TABLE values('$album_name');"
+                current_albumid=$(sqlite3 -batch $DB_FILE "pragma busy_timeout=2000; select albumid from $ALBUM_TABLE where name='$album_name';")
+
+                #We keep the initial location names until a new album comes so we can decide if we change Album name in case e.g. of country border crossing, next near city, etc.
                 old_city=$city
                 old_country=$country
                 old_display=$display
@@ -379,20 +406,24 @@ create_album (){
                 old_state=$state
                 old_suburb=$suburb
                 lcs=""
-            else
+
                 # if [ -n "$lcs" ];then
                 # lcs=$(longest_common_substring "$suburb $city: $state, $country" "$lcs")
                 # else
                 #        lcs="$suburb $city: $state, $country"
                 # fi
-                echo  "   - $(date -d @$current_date +'%Y%m%d_' ) $suburb $city: $state, $country $lcs"
             fi
+            sqlite3 -batch $DB_FILE  "pragma busy_timeout=2000; UPDATE $MAIN_TABLE SET albumid='$current_albumid' where blake2='$blake2';"
+            echo  "   - $(date -d @$current_date +'%Y%m%d_' ) $blake2"
+            old_blake2=$blake2
             old_latitude=$latitude
             old_longitude=$longitude
             old_date=$current_date
         done <<< "$results"
     done
 }
+
+join_by (){ local IFS="$1"; shift; echo "$*"; }
 
 distance (){
 t=$(awk -v la1="$1"  -v lo1="$2" -v la2="$3"  -v lo2="$4" 'BEGIN{
@@ -414,6 +445,11 @@ t=$(awk -v la1="$1"  -v lo1="$2" -v la2="$3"  -v lo2="$4" 'BEGIN{
 #echo $t
 #echo truncated:
 LC_NUMERIC="en_US.UTF-8" printf %.0f "$t"
+}
+
+smash(){
+    recreate_album_table
+    sqlite3 -batch $DB_FILE  "pragma busy_timeout=2000; UPDATE $MAIN_TABLE SET albumid='';"
 }
 
 usage(){
@@ -438,16 +474,20 @@ Create albums (only in DB):
 albumathor -thor
 
 Create albums (symlink):
-albumathor -thor -s
+albumathor -thor -s <destination path>
 
 Create albums (hardlink):
-albumathor -thor -h
+albumathor -thor -h <destination path>
 
 Create albums (copy):
-albumathor -thor -c
+albumathor -thor -c <destination path>
+
+Delete all album associations (in DB only):
+albumathor -smash
 
 EOF
 }
+
 # Execution Starts here
 # ---------------------
 
@@ -473,8 +513,12 @@ case $1 in
         ;;
     -thor)
         DESTINATION="$1"
-        { [ -d $DESTINATION ] && [ test -r ] && [ test -w ] && [ test -x ] ;} || mkdir -p "$DESTINATION" || exit
+        { [ -d $DESTINATION ] && [ -r "$DESTINATION" ] && [ -w "$DESTINATION" ] && [ -x "$DESTINATION" ] ;} || mkdir -p "$DESTINATION" || exit
         create_album
+        exit
+        ;;
+    -smash)
+        smash
         exit
         ;;
 #     *)
@@ -570,5 +614,4 @@ else
     usage
     exit 1
 fi
-
 
