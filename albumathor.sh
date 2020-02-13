@@ -79,6 +79,12 @@ CREATE TABLE IF NOT EXISTS '$LOCATIONS_TABLE' (
     FOREIGN KEY (BLAKE2) REFERENCES $MAIN_TABLE (BLAKE2)
             ON DELETE CASCADE ON UPDATE NO ACTION
 );
+
+CREATE TABLE IF NOT EXISTS '$ALBUM_TABLE' (
+    'NAME' TEXT NOT NULL,
+    'ALBUMID' INTEGER PRIMARY KEY
+);
+
 COMMIT;
 EOF
 }
@@ -96,21 +102,6 @@ CREATE TABLE IF NOT EXISTS '$GPS_TABLE' (
     'COUNTRY' TEXT,
     'SUBURB' TEXT,
     'POSTCODE' TEXT
-);
-COMMIT;
-EOF
-}
-create_album_table(){
-    sqlite3 $DB_FILE <<EOF
-
-BEGIN TRANSACTION;
-CREATE TABLE IF NOT EXISTS '$ALBUM_TABLE' (
-    'NAME' TEXT NOT NULL,
-    'DATE1' TEXT NOT NULL,
-    'DATE2' TEXT,
-    'BLAKE2' TEXT NOT NULL PRIMARY KEY,
-    FOREIGN KEY (BLAKE2) REFERENCES $MAIN_TABLE (BLAKE2)
-            ON DELETE CASCADE ON UPDATE NO ACTION
 );
 COMMIT;
 EOF
@@ -193,7 +184,7 @@ reverse_geocoding (){
     local latitude=$(dmg2dd_lat "$1")
     local longitude=$(dmg2dd_long "$2")
     URL="https://eu1.locationiq.com/v1/reverse.php?key=$TOKEN&lat=$latitude&lon=$longitude&format=json"
-    local out=$(sqlite3 -batch $GPS_FILE "select city,state,country,suburb,postcode,display from $GPS_TABLE where latitude='$latitude' and longitude='$longitude';")|perl -pe 's/(?<!'"')'("'?!'"')/''/g"
+    local out=$(sqlite3 -batch $GPS_FILE "select city,state,country,suburb,postcode,display from $GPS_TABLE where latitude='$latitude' and longitude='$longitude' limit 1;" | perl -pe 's/(?<!'"')'("'?!'"')/''/g")
     if [ -z "$out" ]; then
         # TODO: Duplicate every single quote before save in DB!
         # match single quotes (?<!')'(?!')
@@ -202,9 +193,9 @@ reverse_geocoding (){
         #Normally 1 query per second (locationiq.com allows 2 per second)
         sleep 1
         
-        country=$(echo $address | jq -r '.address.country')
-        state=$(echo $address | jq -r '.address.state')
         city=$(echo $address | jq -r '.address.city')
+        state=$(echo $address | jq -r '.address.state')
+        country=$(echo $address | jq -r '.address.country')
         suburb=$(echo $address | jq -r '.address.suburb')
         postcode=$(echo $address | jq -r '.address.postcode')
         display=$(echo $address | jq -r '.display_name')
@@ -212,6 +203,7 @@ reverse_geocoding (){
         [[ $city == null ]] && city=$(echo $address | jq -r '.address.village')
         [[ $city == null ]] && city=$(echo $address | jq -r '.address.town')
         sqlite3 -batch $GPS_FILE "pragma busy_timeout=2000; insert or ignore into $GPS_TABLE values('$latitude','$longitude','$address','$city','$state','$country','$suburb','$postcode','$display');"
+	echo CACHE
     else
         #select
         local tuple
@@ -222,6 +214,7 @@ reverse_geocoding (){
         suburb="${tuple[3]}"
         postcode="${tuple[4]}"
         display="${tuple[5]}"
+	echo METAL
     fi
 }
 
@@ -328,7 +321,7 @@ create_album (){
     
     while 
     results=$(sqlite3 -batch $DB_FILE "select f.CreateDate,l.city,l.state,l.country,l.suburb,l.postcode,l.blake2,f.GPSLatitude,f.GPSLongitude from fotos f,locations l Where CreateDate not like '-' AND f.BLAKE2=l.BLAKE2 order by CreateDate ASC limit $batch offset $offset;")
-        offset=$(( $offset + $batch ))
+    offset=$(( $offset + $batch ))
     [ -n "$results" ]
     do
 
@@ -356,16 +349,22 @@ create_album (){
             if [[ $country == $old_country ]] && [[ $state == $old_state ]] ;then
                 new=0
             fi
-            if [[ $postcode != "null" ]] && [[ $old_postcode != "null" ]] &&  [ $(difference $postcode $old_postcode) -lt 5 ];then
-                new=0
+            if [ -n "$old_postcode" ] && [ -n "$postcode" ] && [[ $postcode != "null" ]] && [[ $old_postcode != "null" ]] ;then
+		if [[ "$postcode" == "$old_postcode" ]];then
+			new=0
+		elif [ $(difference $postcode $old_postcode) -lt 5 ];then
+       		         new=0
+		fi
             fi
-            if [ -n "$latitude" ] && [ -n "$longitude ] &&  [ -n "$old_latitude" ] && [ -n "$old_longitude ] && \
+            if [ -n "$latitude" ] && [ -n "$longitude" ] &&  [ -n "$old_latitude" ] && [ -n "$old_longitude" ] && \
                [[ "$latitude" != "-" ]] && [[ "$longitude" != "-" ]] && [[ "$old_latitude" != "-" ]] && [[ "$old_longitude" != "-" ]];then
                 latitude=$(dmg2dd_lat "$latitude")
                 longitude=$(dmg2dd_long "$longitude")
 
-                if [ $(distance $latitude $longitude $old_latitude $old_longitude ) -lt 10 ];then
+                if [ $(distance $latitude $longitude $old_latitude $old_longitude ) -lt $DISTANCE ];then
                     new=0
+		else 
+			new=1
                 fi
             fi
             if [ $new -eq 1 ];then
@@ -413,7 +412,7 @@ t=$(awk -v la1="$1"  -v lo1="$2" -v la2="$3"  -v lo2="$4" 'BEGIN{
 )
 #echo $t
 #echo truncated:
-printf %.0f "$t"
+LC_NUMERIC="en_US.UTF-8" printf %.0f "$t"
 }
 
 usage(){
@@ -461,6 +460,8 @@ LOCATIONS_TABLE=locations
 GPS_TABLE=gps
 FORMAT=$HOME/.config/albumathor/format.fmt
 DIFFERENCE=300
+DISTANCE=30
+MINSIZE=50
 
 [ -f $HOME/.config/albumathor/albumathor.conf ] && source $HOME/.config/albumathor/albumathor.conf
 case $1 in
@@ -472,10 +473,10 @@ case $1 in
         create_album
         exit
         ;;
-    *)
-        usage
-        exit 1
-        ;;
+#     *)
+#         usage
+#         exit 1
+#         ;;
 esac
 
 [ -f $DB_FILE ]  || create_database
@@ -486,6 +487,49 @@ path=$(readlink -f "$1")
 # check file/dir existence
 # check binaries existence
 # check config
+
+#Mixed Collections messes up album creation
+# If -thor files from multiple collections from different people it can happen that different persons are in different locations at the same time. 
+# The main principle to guess Album names is proximity of location and time so this scenario will originate alternating albums with one or two files and roughly the same date just changing the location:
+# - 2020-01-05 Boston
+#    - IMG000354.jpg
+# - 2020-01-05 California
+#    - DSC00044456.jpg
+#    - DSC00044457.jpg
+# - 2020-01-05 Boston
+#    - IMG000355.jpg
+#    - IMG000356.jpg
+# - 2020-01-05 California
+#    - DSC00044458.jpg
+# -... and so on
+#
+# If the album name is exactly the same it would be ok but oftentimes location changes to the adjacent neighborhood or city and what should be e.g. a daytrip album ends up being a complete mess
+# The solution would be to maintain an albums table with:
+#  - Begin Date
+#  - End Date
+#  - Location(s?)
+#  - Last-location?
+#  - Name
+#  - ID to serve as foreign key in the main table
+# And try to add each file to an existing album before creating a new one
+
+#REAL date
+# There seems to be no definitive and reliable EXIF field for Date. I even encounter some wrong dates saved in EXIF metadata, leaving the filename as the only alternative to obtain the real date of the file. 
+# 
+# We need to:
+#  - add a new column in DB for REAL date
+#  - find out the most probable real date comparing different EXIF fields
+#  - program a method to extract date from filename probing regexes with different date formats
+#  - stablish a level of confidence and resort to filename date guessing only if necessary
+#  - Fix the original file Metadata???
+
+#NO GPS data
+# If the file doesn't have gps data, that leaves us with only the date proximity to try and create the albums. 
+# One way around it is downloading GPS data from google (if available) and use it to fill the EXIF metadata
+# another possibility is to have a list of festivities or meaningful dates which could give a name to an album (Christmas, New Years Eve, Thanks Giving, 4th July, St Patricks) or even custom ones through config file. 
+# 
+#Known locations
+# Give the user the possibility to mark some known locations to avoid creating many albums with the same uninteressant names so instead of e.g. 'Marienplatz 10, Munich, Bavaria, Germany' it would say 'Home - Munich' or whatever the user defines. We could even group them together or make sub-albums under that folder
 
 if [ -d "$path" ]; then
     while IFS= read -r -d '' file; do
@@ -501,7 +545,9 @@ if [ -d "$path" ]; then
         tuple="\"$file\",$tuple"
         insert "$tuple" $bytesize "$sum"
         echo $?
-    done < <(find "$path" -type f  -print0)
+    done < <(find "$path" \( -iname "*.jpg" -or -iname "*.jpeg" -or -iname "*.png" \) -size +$MINSIZEk -type f  -print0)
+    #find "$path" \( -iname "*.jpg" -or -iname "*.jpeg" -or -iname "*.png" -or -iname "*.tif" -or -iname "*.bmp" -or -iname "*.gif" -or -iname "*.xpm" -or -iname "*.nef" -or -iname "*.cr2" -or -iname "*.arw" \) -size +20k
+    #find "$path" \( -iname "*.jpg" -or -iname "*.jpeg" -or -iname "*.png" \) -size +20k
 elif [ -f "$path" ];then
     file="$path"
     echo "checking $file"
