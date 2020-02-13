@@ -89,10 +89,9 @@ CREATE TABLE IF NOT EXISTS '$ALBUM_TABLE' (
 COMMIT;
 EOF
 }
+
 recreate_album_table(){
-
-    sqlite3 $ALBUM_FILE <<EOF
-
+    sqlite3 $DB_FILE <<EOF
 BEGIN TRANSACTION;
 DROP TABLE IF EXISTS $ALBUM_TABLE;
 CREATE TABLE IF NOT EXISTS '$ALBUM_TABLE' (
@@ -421,17 +420,19 @@ create_album (){
             if [ $new -eq 1 ];then
                 #clean album name (no nulls)
                 local valid_names=()
-                [[ $suburb != "null" ]]  && [[ $suburb != "-" ]]  && valid_names+=( $suburb )
-                [[ $city != "null" ]]    && [[ $city != "-" ]]    && valid_names+=( $city )
-                [[ $state != "null" ]]   && [[ $state != "-" ]]   && valid_names+=( $state )
-                [[ $country != "null" ]] && [[ $country != "-" ]] && valid_names+=( ${country^^} )
+                [[ $suburb != "null" ]]  && [[ $suburb != "-" ]]  && valid_names+=( "$suburb" )
+                [[ $city != "null" ]]    && [[ $city != "-" ]]    && valid_names+=( "$city" )
+                [[ $state != "null" ]]   && [[ $state != "-" ]]   && valid_names+=( "$state" )
+                [[ $country != "null" ]] && [[ $country != "-" ]] && valid_names+=( "${country^^}" )
 
                 album_name=$(date -d @$current_date +'%Y%m%d_' )$(join_by ", " "${valid_names[@]}")
 
-                echo NEW album:  $album_name
-                sqlite3 -batch $DB_FILE " insert into $ALBUM_TABLE values('$album_name');"
-                current_albumid=$(sqlite3 -batch $DB_FILE " select albumid from $ALBUM_TABLE where name='$album_name';")
-
+		current_albumid=$(sqlite3 -batch $DB_FILE "select albumid from $ALBUM_TABLE where name='$album_name';")
+		if [ -z $current_albumid ];then 
+                    echo NEW album:  $album_name
+                    sqlite3 -batch $DB_FILE " insert into $ALBUM_TABLE values('$album_name',null);"
+                    current_albumid=$(sqlite3 -batch $DB_FILE " select albumid from $ALBUM_TABLE where name='$album_name';")
+                fi
                 #We keep the initial location names until a new album comes so we can decide if we change Album name in case e.g. of country border crossing, next near city, etc.
                 old_city=$city
                 old_country=$country
@@ -546,8 +547,8 @@ case $1 in
         exit
         ;;
     -thor)
-        DESTINATION="$1"
-        { [ -d $DESTINATION ] && [ -r "$DESTINATION" ] && [ -w "$DESTINATION" ] && [ -x "$DESTINATION" ] ;} || mkdir -p "$DESTINATION" || exit
+        #DESTINATION="$2"
+        #{ [ -d $DESTINATION ] && [ -r "$DESTINATION" ] && [ -w "$DESTINATION" ] && [ -x "$DESTINATION" ] ;} || mkdir -p "$DESTINATION" || exit
         create_album
         exit
         ;;
