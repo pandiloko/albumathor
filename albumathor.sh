@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS '$MAIN_TABLE' (
     'ShutterSpeed' TEXT,
     'WhiteBalance' TEXT,
     'ByteSize' INTEGER,
-    'BLAKE2'    TEXT NOT NULL PRIMARY KEY
+    'BLAKE2'    TEXT NOT NULL PRIMARY KEY,
+    'RealDate' TEXT
 );
 
 CREATE TABLE IF NOT EXISTS '$LOCATIONS_TABLE' (
@@ -147,15 +148,45 @@ insert (){
     local sum="$3"
 
     if exists_checksum fotos $sum ;then
-        echo $?
-        echo exists
         return 302
     else
         echo "inserting $tuple,$bytesize,$sum"
         sqlite3 -batch $DB_FILE <<EOF
-pragma busy_timeout=2000;
-insert into $MAIN_TABLE values($tuple,$bytesize,'$sum');
+insert into $MAIN_TABLE values($tuple,$bytesize,'$sum','-');
 EOF
+	#FIX some data:
+        IFS=',' read -ra values <<< "$tuple"
+	sqlite3 -batch $DB_FILE  " UPDATE $MAIN_TABLE SET GPSLatitude='$(dmg2dd $values[31]), GPSLongitude=$(dmg2dd $values[33]) where blake2='$blake2';"
+	#FIX DATE
+	local createdate="$values[2]"
+	local datetimeoriginal="$values[3]"
+	local filename="$values[13]"
+	local gpsdatestamp="$values[24]"
+	local gpsdatetime="$values[25]"
+	local gpstimestamp="$values[39]"
+	
+	if [[ $datetimeoriginal != '-' ]] || [[ $datetimeoriginal != 'null' ]] || [ -n "$datetimeoriginal" ];then
+		realdate=$datetimeoriginal
+	elif [[ $gpsdatetime != '-' ]] || [[ $gpsdatetime != 'null' ]] || [ -n "$gpsdatetime" ];then
+		realdate=$gpdsatetime 
+		#check format and convert???
+	elif [[ $createdate != '-' ]] || [[ $createdate != 'null' ]] || [ -n "$createdate" ];then
+		realdate=$createdate
+	else 
+		#else compare other dates or filename
+		local regex='(1|2)[[:digit:]]{3}(\-|\.|:)?[[:digit:]]{2}(\-|\.|:)?[[:digit:]]{2}[^[:digit:]]+[0-2][0-9](\-|\.|:)?[0-5][0-9](\-|\.|:)?[0-5][0-9]'
+		if [[ "$filename" =~ $regex ]];then
+			echo ${BASH_REMATCH[0]}
+			#should probably work just with index 0 but 
+			realdate=$(date --date "${BASH_REMATCH[1]}/${BASH_REMATCH[4]}/${BASH_REMATCH[6]} ${BASH_REMATCH[7]}:${BASH_REMATCH[9]}:${BASH_REMATCH[11]}" +"%s" )
+
+		fi
+#Stackoverflow regex for dd/mm/yyyy, dd-mm-yyyy or dd.mm.yyyy
+#^(?:(?:31(\/|-|\.)(?:0?[13578]|1[02]))\1|(?:(?:29|30)(\/|-|\.)(?:0?[13-9]|1[0-2])\2))(?:(?:1[6-9]|[2-9]\d)?\d{2})$|^(?:29(\/|-|\.)0?2\3(?:(?:(?:1[6-9]|[2-9]\d)?(?:0[48]|[2468][048]|[13579][26])|(?:(?:16|[2468][048]|[3579][26])00))))$|^(?:0?[1-9]|1\d|2[0-8])(\/|-|\.)(?:(?:0?[1-9])|(?:1[0-2]))\4(?:(?:1[6-9]|[2-9]\d)?\d{2})$
+#My own naive regex
+#(1|2)[[:digit:]]{3}(\-|\.|:)?[[:digit:]]{2}(\-|\.|:)?[[:digit:]]{2}[^[:digit:]]+[0-2][0-9](\-|\.|:)?[0-5][0-9](\-|\.|:)?[0-5][0-9]
+#((1|2)[[:digit:]]{3})(\-|\.|:)?([[:digit:]]{2})(\-|\.|:)?([[:digit:]]{2})[^[:digit:]]+([0-2][0-9])(\-|\.|:)?([0-5][0-9])(\-|\.|:)?([0-5][0-9])
+	fi
         return 0
     fi
 }
@@ -194,6 +225,8 @@ reverse_geocoding (){
     # $! -> Longitude
     # GET https://eu1.locationiq.com/v1/reverse.php?key=YOUR_PRIVATE_TOKEN&lat=LATITUDE&lon=LONGITUDE&format=json
     # fills global vars if possible (city,country,state,suburb,postcode)
+    # reported error with openstreetmaps postcode
+    # https://www.openstreetmap.org/note/2088580
     local latitude=$(dmg2dd_lat "$1")
     local longitude=$(dmg2dd_long "$2")
     URL="https://eu1.locationiq.com/v1/reverse.php?key=$TOKEN&lat=$latitude&lon=$longitude&format=json"
@@ -215,7 +248,7 @@ reverse_geocoding (){
 
         [[ $city == null ]] && city=$(echo $address | jq -r '.address.village')
         [[ $city == null ]] && city=$(echo $address | jq -r '.address.town')
-        sqlite3 -batch $GPS_FILE "pragma busy_timeout=2000; insert or ignore into $GPS_TABLE values('$latitude','$longitude','$address','$city','$state','$country','$suburb','$postcode','$display');"
+        sqlite3 -batch $GPS_FILE " insert or ignore into $GPS_TABLE values('$latitude','$longitude','$address','$city','$state','$country','$suburb','$postcode','$display');"
     #echo METAL
     else
         #select
@@ -253,14 +286,12 @@ update_locations (){
             echo update
             echo "UPDATE $LOCATIONS_TABLE SET city='$city',state='$state',country='$country',suburb='$suburb',postcode='$postcode',display='$display' where blake2='$blake2';"
             sqlite3 -batch $DB_FILE <<EOF
-pragma busy_timeout=20000;
 UPDATE $LOCATIONS_TABLE SET city='$city',state='$state',country='$country',suburb='$suburb',postcode='$postcode',display='$display' where blake2='$blake2';
 EOF
         else
             echo insert
             echo "insert or ignore into $LOCATIONS_TABLE values('$city','$state','$country','$suburb','$postcode','$display','$blake2');"
             sqlite3 -batch $DB_FILE <<EOF
-pragma busy_timeout=20000;
 insert or ignore into $LOCATIONS_TABLE values('$city','$state','$country','$suburb','$postcode','$display','$blake2');
 EOF
         fi
@@ -365,7 +396,7 @@ create_album (){
             if [[ $country == $old_country ]] && [[ $state == $old_state ]] ;then
                 new=0
             fi
-            if [ -n "$old_postcode" ] && [ -n "$postcode" ] && [[ $postcode != "null" ]] && [[ $old_postcode != "null" ]] ;then
+            if [ $new -eq 1 ] && [ -n "$old_postcode" ] && [ -n "$postcode" ] && [[ $postcode != "null" ]] && [[ $old_postcode != "null" ]] ;then
                 if [[ "$postcode" == "$old_postcode" ]];then
                     new=0
                 elif [ $(difference $postcode $old_postcode) -lt 5 ];then
@@ -384,6 +415,9 @@ create_album (){
                 fi
             fi
 
+	    #Check if really new
+	    #select latitude,longitude,ABS(longitude - -13.362500),ABS(latitude - 28.362500) from gps order by ABS(latitude - 28.362500) + ABS(longitude - -13.362500)  asc ;
+
             if [ $new -eq 1 ];then
                 #clean album name (no nulls)
                 local valid_names=()
@@ -395,8 +429,8 @@ create_album (){
                 album_name=$(date -d @$current_date +'%Y%m%d_' )$(join_by ", " "${valid_names[@]}")
 
                 echo NEW album:  $album_name
-                sqlite3 -batch $DB_FILE "pragma busy_timeout=2000; insert into $ALBUM_TABLE values('$album_name');"
-                current_albumid=$(sqlite3 -batch $DB_FILE "pragma busy_timeout=2000; select albumid from $ALBUM_TABLE where name='$album_name';")
+                sqlite3 -batch $DB_FILE " insert into $ALBUM_TABLE values('$album_name');"
+                current_albumid=$(sqlite3 -batch $DB_FILE " select albumid from $ALBUM_TABLE where name='$album_name';")
 
                 #We keep the initial location names until a new album comes so we can decide if we change Album name in case e.g. of country border crossing, next near city, etc.
                 old_city=$city
@@ -413,7 +447,7 @@ create_album (){
                 #        lcs="$suburb $city: $state, $country"
                 # fi
             fi
-            sqlite3 -batch $DB_FILE  "pragma busy_timeout=2000; UPDATE $MAIN_TABLE SET albumid='$current_albumid' where blake2='$blake2';"
+            sqlite3 -batch $DB_FILE  " UPDATE $MAIN_TABLE SET albumid='$current_albumid' where blake2='$blake2';"
             echo  "   - $(date -d @$current_date +'%Y%m%d_' ) $blake2"
             old_blake2=$blake2
             old_latitude=$latitude
@@ -449,7 +483,7 @@ LC_NUMERIC="en_US.UTF-8" printf %.0f "$t"
 
 smash(){
     recreate_album_table
-    sqlite3 -batch $DB_FILE  "pragma busy_timeout=2000; UPDATE $MAIN_TABLE SET albumid='';"
+    sqlite3 -batch $DB_FILE  " UPDATE $MAIN_TABLE SET albumid='';"
 }
 
 usage(){
