@@ -155,6 +155,9 @@ insert (){
 insert into $MAIN_TABLE values($tuple,$bytesize,'$blake2','-');
 EOF
 	#FIX some data:
+
+        IFS=',' read -ra values <<< "$tuple"
+	sqlite3 -batch $DB_FILE  " UPDATE $MAIN_TABLE SET GPSLatitude='$(convert_lalong $values[31]), GPSLongitude=$(convert_lalong $values[33]) where blake2='$blake2';"
         local out=$(sqlite3 -batch $DB_FILE  "SELECT * from $MAIN_TABLE where blake2='$blake2';")
         IFS='|' read -ra tuple <<< "$out"
 
@@ -224,18 +227,19 @@ time_difference (){
     echo $D
 }
 
-dmg2dd_lat(){
-    local latitude=( $1 )
-    { [[ ${latitude[1]} == S ]] && latitude=-${latitude[0]} ;} || latitude=${latitude[0]}
-    echo $latitude
+convert_lalong (){
+	# takes latitude or longitude with cardinal point and returns converted to positive/negative values
+	# $1 -> LAt or long with cardinal point (NSWE)
+	local lalong="$1"
+	#convert if $1 has two array members (degrees and cardinal point)
+	if [ ${lalong[#]} -gt 1 ] ;then
+		if [[ ${lalong[1]} == S ]] ||  [[ ${lalong[1]} == W ]] ;then
+			lalong=-${lalong[0]}
+		else
+			lalong=${lalong[0]}
+		fi
+	fi
 }
-
-dmg2dd_long(){
-    local longitude=( $1 )
-    { [[ ${longitude[1]} == W ]] && longitude=-${longitude[0]} ;} || longitude=${longitude[0]}
-    echo $longitude
-}
-
 reverse_geocoding (){
     # $! -> Latitude
     # $! -> Longitude
@@ -243,8 +247,8 @@ reverse_geocoding (){
     # fills global vars if possible (city,country,state,suburb,postcode)
     # reported error with openstreetmaps postcode
     # https://www.openstreetmap.org/note/2088580
-    local latitude=$(dmg2dd_lat "$1")
-    local longitude=$(dmg2dd_long "$2")
+    local latitude=$(convert_lalong "$1")
+    local longitude=$(convert_lalong "$2")
     URL="https://eu1.locationiq.com/v1/reverse.php?key=$TOKEN&lat=$latitude&lon=$longitude&format=json"
     local out=$(sqlite3 -batch $GPS_FILE "select city,state,country,suburb,postcode,display from $GPS_TABLE where latitude like '${latitude}%' and longitude like '${longitude}%' limit 1;" | perl -pe 's/(?<!'"')'("'?!'"')/''/g")
     if [ -z "$out" ]; then
@@ -421,8 +425,8 @@ create_album (){
             fi
             if [ -n "$latitude" ] && [ -n "$longitude" ] &&  [ -n "$old_latitude" ] && [ -n "$old_longitude" ] && \
                [[ "$latitude" != "-" ]] && [[ "$longitude" != "-" ]] && [[ "$old_latitude" != "-" ]] && [[ "$old_longitude" != "-" ]];then
-                latitude=$(dmg2dd_lat "$latitude")
-                longitude=$(dmg2dd_long "$longitude")
+                latitude=$(convert_lalong "$latitude")
+                longitude=$(convert_lalong "$longitude")
 
                 if [ $(distance $latitude $longitude $old_latitude $old_longitude ) -lt $DISTANCE ];then
                     new=0
