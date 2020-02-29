@@ -66,7 +66,8 @@ CREATE TABLE IF NOT EXISTS '$MAIN_TABLE' (
     'WhiteBalance' TEXT,
     'ByteSize' INTEGER,
     'BLAKE2'    TEXT NOT NULL PRIMARY KEY,
-    'RealDate' TEXT
+    'RealDate' TEXT,
+    'ALBUMID' INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS '$LOCATIONS_TABLE' (
@@ -144,48 +145,64 @@ exists_file(){
 insert (){
     local tuple="$1"
     local bytesize="$2"
-    local sum="$3"
+    local blake2="$3"
 
-    if exists_checksum fotos $sum ;then
+    if exists_checksum fotos $blake2 ;then
         return 302
     else
-        echo "inserting $tuple,$bytesize,$sum"
+        echo "inserting $tuple,$bytesize,$blake2"
         sqlite3 -batch $DB_FILE <<EOF
-insert into $MAIN_TABLE values($tuple,$bytesize,'$sum','-');
+insert into $MAIN_TABLE values($tuple,$bytesize,'$blake2','-');
 EOF
 	#FIX some data:
-        IFS=',' read -ra values <<< "$tuple"
-	sqlite3 -batch $DB_FILE  " UPDATE $MAIN_TABLE SET GPSLatitude='$(dmg2dd $values[31]), GPSLongitude=$(dmg2dd $values[33]) where blake2='$blake2';"
+        local out=$(sqlite3 -batch $DB_FILE  "SELECT * from $MAIN_TABLE where blake2='$blake2';")
+        IFS='|' read -ra tuple <<< "$out"
+
+        # IFS=',' read -ra values <<< "$tuple"
+	# values=( "${values[@]//\'/}" )
+	# values=( "${values[@]# }" )
+
+        
+	local createdate="${tuple[2]}"
+	local datetimeoriginal="${tuple[3]}"
+	local filename="${tuple[13]}"
+	local gpsdatestamp="${tuple[24]}"
+	local gpsdatetime="${tuple[25]}"
+        local gpslatitude=$(dmg2dd_lat "${tuple[31]}")
+        local gpslongitude=$(dmg2dd_long "${tuple[33]}")
+	local gpstimestamp="${tuple[39]}"
+
 	#FIX DATE
-	local createdate="$values[2]"
-	local datetimeoriginal="$values[3]"
-	local filename="$values[13]"
-	local gpsdatestamp="$values[24]"
-	local gpsdatetime="$values[25]"
-	local gpstimestamp="$values[39]"
 	
-	if [[ $datetimeoriginal != '-' ]] || [[ $datetimeoriginal != 'null' ]] || [ -n "$datetimeoriginal" ];then
+	if [[ $datetimeoriginal != '-' ]] && [[ $datetimeoriginal != 'null' ]] && [ -n "$datetimeoriginal" ];then
 		realdate=$datetimeoriginal
-	elif [[ $gpsdatetime != '-' ]] || [[ $gpsdatetime != 'null' ]] || [ -n "$gpsdatetime" ];then
+	elif [[ $gpsdatetime != '-' ]] && [[ $gpsdatetime != 'null' ]] && [ -n "$gpsdatetime" ];then
 		realdate=$gpdsatetime 
 		#check format and convert???
-	elif [[ $createdate != '-' ]] || [[ $createdate != 'null' ]] || [ -n "$createdate" ];then
+	elif [[ $createdate != '-' ]] && [[ $createdate != 'null' ]] && [ -n "$createdate" ];then
 		realdate=$createdate
 	else 
 		#else compare other dates or filename
-		local regex='(1|2)[[:digit:]]{3}(\-|\.|:)?[[:digit:]]{2}(\-|\.|:)?[[:digit:]]{2}[^[:digit:]]+[0-2][0-9](\-|\.|:)?[0-5][0-9](\-|\.|:)?[0-5][0-9]'
+                local regex='((1|2)[[:digit:]]{3})(\-|\.|:)?([[:digit:]]{2})(\-|\.|:)?([[:digit:]]{2})[^[:digit:]]+([0-2][0-9])(\-|\.|:)?([0-5][0-9])(\-|\.|:)?([0-5][0-9])'
+		# local regex='(1|2)[[:digit:]]{3}(\-|\.|:)?[[:digit:]]{2}(\-|\.|:)?[[:digit:]]{2}[^[:digit:]]+[0-2][0-9](\-|\.|:)?[0-5][0-9](\-|\.|:)?[0-5][0-9]'
 		if [[ "$filename" =~ $regex ]];then
 			echo ${BASH_REMATCH[0]}
+                        echo ${BASH_REMATCH[@]}
 			#should probably work just with index 0 but 
 			realdate=$(date --date "${BASH_REMATCH[1]}/${BASH_REMATCH[4]}/${BASH_REMATCH[6]} ${BASH_REMATCH[7]}:${BASH_REMATCH[9]}:${BASH_REMATCH[11]}" +"%s" )
-
 		fi
 #Stackoverflow regex for dd/mm/yyyy, dd-mm-yyyy or dd.mm.yyyy
 #^(?:(?:31(\/|-|\.)(?:0?[13578]|1[02]))\1|(?:(?:29|30)(\/|-|\.)(?:0?[13-9]|1[0-2])\2))(?:(?:1[6-9]|[2-9]\d)?\d{2})$|^(?:29(\/|-|\.)0?2\3(?:(?:(?:1[6-9]|[2-9]\d)?(?:0[48]|[2468][048]|[13579][26])|(?:(?:16|[2468][048]|[3579][26])00))))$|^(?:0?[1-9]|1\d|2[0-8])(\/|-|\.)(?:(?:0?[1-9])|(?:1[0-2]))\4(?:(?:1[6-9]|[2-9]\d)?\d{2})$
-#My own naive regex
+#My own naive regex for YYYY/mm/dd HH:MM:ss with dashes, colon or slash
 #(1|2)[[:digit:]]{3}(\-|\.|:)?[[:digit:]]{2}(\-|\.|:)?[[:digit:]]{2}[^[:digit:]]+[0-2][0-9](\-|\.|:)?[0-5][0-9](\-|\.|:)?[0-5][0-9]
+#with capture groups:
 #((1|2)[[:digit:]]{3})(\-|\.|:)?([[:digit:]]{2})(\-|\.|:)?([[:digit:]]{2})[^[:digit:]]+([0-2][0-9])(\-|\.|:)?([0-5][0-9])(\-|\.|:)?([0-5][0-9])
 	fi
+	#TODO: Check data before update??
+	sqlite3 -batch $DB_FILE  "UPDATE $MAIN_TABLE SET RealDate='$realdate' where blake2='$blake2';"
+
+        #FIX GPS too
+        [[ $gpslatitude != '-' ]] && [[ $gpslongitude != '-' ]] && sqlite3 -batch $DB_FILE  "UPDATE $MAIN_TABLE SET GPSLatitude=$gpslatitude, GPSLongitude=$gpslongitude where blake2='$blake2';"
         return 0
     fi
 }
@@ -229,7 +246,7 @@ reverse_geocoding (){
     local latitude=$(dmg2dd_lat "$1")
     local longitude=$(dmg2dd_long "$2")
     URL="https://eu1.locationiq.com/v1/reverse.php?key=$TOKEN&lat=$latitude&lon=$longitude&format=json"
-    local out=$(sqlite3 -batch $GPS_FILE "select city,state,country,suburb,postcode,display from $GPS_TABLE where latitude='$latitude' and longitude='$longitude' limit 1;" | perl -pe 's/(?<!'"')'("'?!'"')/''/g")
+    local out=$(sqlite3 -batch $GPS_FILE "select city,state,country,suburb,postcode,display from $GPS_TABLE where latitude like '${latitude}%' and longitude like '${longitude}%' limit 1;" | perl -pe 's/(?<!'"')'("'?!'"')/''/g")
     if [ -z "$out" ]; then
         # TODO: Duplicate every single quote before save in DB!
         # match single quotes (?<!')'(?!')
@@ -626,9 +643,9 @@ if [ -d "$path" ]; then
         #tuple=$(exiftool -f -d "%Y-%m-%d %H:%M:%S" -c '%.6f' -p $FORMAT "$file")
         tuple=$(exiftool -f -d "%s" -c '%.6f' -p $FORMAT "$file")
         tuple="\"$file\",$tuple"
-        insert "$tuple" $bytesize "$sum"
+        insert "$tuple" $bytesize $sum
         echo $?
-    done < <(find "$path" \( -iname "*.jpg" -or -iname "*.jpeg" -or -iname "*.png" \) -size +$MINSIZE -type f  -print0)
+    done < <(find "$path" \( -iname "*.jpg" -or -iname "*.jpeg" -or -iname "*.png" -or -iname "*.heic" \) -size +$MINSIZE -type f  -print0)
     #find "$path" \( -iname "*.jpg" -or -iname "*.jpeg" -or -iname "*.png" -or -iname "*.tif" -or -iname "*.bmp" -or -iname "*.gif" -or -iname "*.xpm" -or -iname "*.nef" -or -iname "*.cr2" -or -iname "*.arw" \) -size +20k
     #find "$path" \( -iname "*.jpg" -or -iname "*.jpeg" -or -iname "*.png" \) -size +20k
 elif [ -f "$path" ];then
