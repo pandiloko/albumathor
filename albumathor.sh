@@ -154,62 +154,60 @@ insert (){
         sqlite3 -batch $DB_FILE <<EOF
 insert into $MAIN_TABLE values($tuple,$bytesize,'$blake2','-');
 EOF
-	#FIX some data:
+    #FIX some data:
 
         IFS=',' read -ra values <<< "$tuple"
-	sqlite3 -batch $DB_FILE  " UPDATE $MAIN_TABLE SET GPSLatitude='$(convert_lalong $values[31]), GPSLongitude=$(convert_lalong $values[33]) where blake2='$blake2';"
+        sqlite3 -batch $DB_FILE  " UPDATE $MAIN_TABLE SET GPSLatitude='$(convert_lalong $values[31]), GPSLongitude=$(convert_lalong $values[33]) where blake2='$blake2';"
         local out=$(sqlite3 -batch $DB_FILE  "SELECT * from $MAIN_TABLE where blake2='$blake2';")
         IFS='|' read -ra tuple <<< "$out"
 
         # IFS=',' read -ra values <<< "$tuple"
-	# values=( "${values[@]//\'/}" )
-	# values=( "${values[@]# }" )
-
+        # values=( "${values[@]//\'/}" )
+        # values=( "${values[@]# }" )
         
-	local createdate="${tuple[2]}"
-	local datetimeoriginal="${tuple[3]}"
-	local filename="${tuple[13]}"
-	local gpsdatestamp="${tuple[24]}"
-	local gpsdatetime="${tuple[25]}"
+        local createdate="${tuple[2]}"
+        local datetimeoriginal="${tuple[3]}"
+        local filename="${tuple[13]}"
+        local gpsdatestamp="${tuple[24]}"
+        local gpsdatetime="${tuple[25]}"
         local gpslatitude=$(dmg2dd_lat "${tuple[31]}")
         local gpslongitude=$(dmg2dd_long "${tuple[33]}")
-	local gpstimestamp="${tuple[39]}"
+        local gpstimestamp="${tuple[39]}"
 
-	#FIX DATE
-	
-	if [[ $datetimeoriginal != '-' ]] && [[ $datetimeoriginal != 'null' ]] && [ -n "$datetimeoriginal" ];then
-		realdate=$datetimeoriginal
-	elif [[ $gpsdatetime != '-' ]] && [[ $gpsdatetime != 'null' ]] && [ -n "$gpsdatetime" ];then
-		realdate=$gpdsatetime 
-		#check format and convert???
-	elif [[ $createdate != '-' ]] && [[ $createdate != 'null' ]] && [ -n "$createdate" ];then
-		realdate=$createdate
-	else 
-		#else compare other dates or filename
-                local regex='((1|2)[[:digit:]]{3})(\-|\.|:)?([[:digit:]]{2})(\-|\.|:)?([[:digit:]]{2})[^[:digit:]]+([0-2][0-9])(\-|\.|:)?([0-5][0-9])(\-|\.|:)?([0-5][0-9])'
-		# local regex='(1|2)[[:digit:]]{3}(\-|\.|:)?[[:digit:]]{2}(\-|\.|:)?[[:digit:]]{2}[^[:digit:]]+[0-2][0-9](\-|\.|:)?[0-5][0-9](\-|\.|:)?[0-5][0-9]'
-		if [[ "$filename" =~ $regex ]];then
-			echo ${BASH_REMATCH[0]}
-                        echo ${BASH_REMATCH[@]}
-			#should probably work just with index 0 but 
-			realdate=$(date --date "${BASH_REMATCH[1]}/${BASH_REMATCH[4]}/${BASH_REMATCH[6]} ${BASH_REMATCH[7]}:${BASH_REMATCH[9]}:${BASH_REMATCH[11]}" +"%s" )
-		fi
-#Stackoverflow regex for dd/mm/yyyy, dd-mm-yyyy or dd.mm.yyyy
-#^(?:(?:31(\/|-|\.)(?:0?[13578]|1[02]))\1|(?:(?:29|30)(\/|-|\.)(?:0?[13-9]|1[0-2])\2))(?:(?:1[6-9]|[2-9]\d)?\d{2})$|^(?:29(\/|-|\.)0?2\3(?:(?:(?:1[6-9]|[2-9]\d)?(?:0[48]|[2468][048]|[13579][26])|(?:(?:16|[2468][048]|[3579][26])00))))$|^(?:0?[1-9]|1\d|2[0-8])(\/|-|\.)(?:(?:0?[1-9])|(?:1[0-2]))\4(?:(?:1[6-9]|[2-9]\d)?\d{2})$
-#My own naive regex for YYYY/mm/dd HH:MM:ss with dashes, colon or slash
-#(1|2)[[:digit:]]{3}(\-|\.|:)?[[:digit:]]{2}(\-|\.|:)?[[:digit:]]{2}[^[:digit:]]+[0-2][0-9](\-|\.|:)?[0-5][0-9](\-|\.|:)?[0-5][0-9]
-#with capture groups:
-#((1|2)[[:digit:]]{3})(\-|\.|:)?([[:digit:]]{2})(\-|\.|:)?([[:digit:]]{2})[^[:digit:]]+([0-2][0-9])(\-|\.|:)?([0-5][0-9])(\-|\.|:)?([0-5][0-9])
-	fi
-	#TODO: Check data before update??
-	sqlite3 -batch $DB_FILE  "UPDATE $MAIN_TABLE SET RealDate='$realdate' where blake2='$blake2';"
+        #FIX DATE
+        
+        if [[ $datetimeoriginal != '-' ]] && [[ $datetimeoriginal != 'null' ]] && [ -n "$datetimeoriginal" ];then
+            realdate=$datetimeoriginal
+        elif [[ $gpsdatetime != '-' ]] && [[ $gpsdatetime != 'null' ]] && [ -n "$gpsdatetime" ];then
+            realdate=$gpdsatetime 
+            #check format and convert???
+        elif [[ $createdate != '-' ]] && [[ $createdate != 'null' ]] && [ -n "$createdate" ];then
+            realdate=$createdate
+        else 
+            #else compare other dates or filename
+            local regex='((1|2)[[:digit:]]{3})(\-|\.|:)?([[:digit:]]{2})(\-|\.|:)?([[:digit:]]{2})[^[:digit:]]+([0-2][0-9])(\-|\.|:)?([0-5][0-9])(\-|\.|:)?([0-5][0-9])'
+            # local regex='(1|2)[[:digit:]]{3}(\-|\.|:)?[[:digit:]]{2}(\-|\.|:)?[[:digit:]]{2}[^[:digit:]]+[0-2][0-9](\-|\.|:)?[0-5][0-9](\-|\.|:)?[0-5][0-9]'
+            if [[ "$filename" =~ $regex ]];then
+                echo ${BASH_REMATCH[0]}
+                            echo ${BASH_REMATCH[@]}
+                #should probably work just with index 0 but 
+                realdate=$(date --date "${BASH_REMATCH[1]}/${BASH_REMATCH[4]}/${BASH_REMATCH[6]} ${BASH_REMATCH[7]}:${BASH_REMATCH[9]}:${BASH_REMATCH[11]}" +"%s" )
+            fi
+        #Stackoverflow regex for dd/mm/yyyy, dd-mm-yyyy or dd.mm.yyyy
+        #^(?:(?:31(\/|-|\.)(?:0?[13578]|1[02]))\1|(?:(?:29|30)(\/|-|\.)(?:0?[13-9]|1[0-2])\2))(?:(?:1[6-9]|[2-9]\d)?\d{2})$|^(?:29(\/|-|\.)0?2\3(?:(?:(?:1[6-9]|[2-9]\d)?(?:0[48]|[2468][048]|[13579][26])|(?:(?:16|[2468][048]|[3579][26])00))))$|^(?:0?[1-9]|1\d|2[0-8])(\/|-|\.)(?:(?:0?[1-9])|(?:1[0-2]))\4(?:(?:1[6-9]|[2-9]\d)?\d{2})$
+        #My own naive regex for YYYY/mm/dd HH:MM:ss with dashes, colon or slash
+        #(1|2)[[:digit:]]{3}(\-|\.|:)?[[:digit:]]{2}(\-|\.|:)?[[:digit:]]{2}[^[:digit:]]+[0-2][0-9](\-|\.|:)?[0-5][0-9](\-|\.|:)?[0-5][0-9]
+        #with capture groups:
+        #((1|2)[[:digit:]]{3})(\-|\.|:)?([[:digit:]]{2})(\-|\.|:)?([[:digit:]]{2})[^[:digit:]]+([0-2][0-9])(\-|\.|:)?([0-5][0-9])(\-|\.|:)?([0-5][0-9])
+        fi
+        #TODO: Check data before update??
+        sqlite3 -batch $DB_FILE  "UPDATE $MAIN_TABLE SET RealDate='$realdate' where blake2='$blake2';"
 
         #FIX GPS too
         [[ $gpslatitude != '-' ]] && [[ $gpslongitude != '-' ]] && sqlite3 -batch $DB_FILE  "UPDATE $MAIN_TABLE SET GPSLatitude=$gpslatitude, GPSLongitude=$gpslongitude where blake2='$blake2';"
         return 0
     fi
 }
-
 
 difference (){
     # returns time difference in minutes
@@ -218,6 +216,7 @@ difference (){
     local D=$(echo $C | tr -d "-")
     echo $D
 }
+
 time_difference (){
     # returns time difference in minutes
     #SHOULD BE Epoch
@@ -228,17 +227,18 @@ time_difference (){
 }
 
 convert_lalong (){
-	# takes latitude or longitude with cardinal point and returns converted to positive/negative values
-	# $1 -> LAt or long with cardinal point (NSWE)
-	local lalong="$1"
-	#convert if $1 has two array members (degrees and cardinal point)
-	if [ ${lalong[#]} -gt 1 ] ;then
-		if [[ ${lalong[1]} == S ]] ||  [[ ${lalong[1]} == W ]] ;then
-			lalong=-${lalong[0]}
-		else
-			lalong=${lalong[0]}
-		fi
-	fi
+    # takes latitude or longitude with cardinal point and returns converted to positive/negative values
+    # $1 -> LAt or long with cardinal point (NSWE)
+    local lalong="$1"
+    #convert if $1 has two array members (degrees and cardinal point)
+    if [ ${#lalong[@]} -gt 1 ] ;then
+        if [[ ${lalong[1]} == S ]] ||  [[ ${lalong[1]} == W ]] ;then
+            lalong=-${lalong[0]}
+        else
+            lalong=${lalong[0]}
+        fi
+    fi
+    echo $lalong
 }
 reverse_geocoding (){
     # $! -> Latitude
@@ -316,6 +316,7 @@ insert or ignore into $LOCATIONS_TABLE values('$city','$state','$country','$subu
 EOF
         fi
     done <<< "$results"
+
 # UPSERT since SQLITE 3.24
 # INSERT INTO players (user_name, age)
 #   VALUES('steven', 32)
@@ -435,8 +436,8 @@ create_album (){
                 fi
             fi
 
-	    #Check if really new
-	    #select latitude,longitude,ABS(longitude - -13.362500),ABS(latitude - 28.362500) from gps order by ABS(latitude - 28.362500) + ABS(longitude - -13.362500)  asc ;
+        #Check if really new
+        #select latitude,longitude,ABS(longitude - -13.362500),ABS(latitude - 28.362500) from gps order by ABS(latitude - 28.362500) + ABS(longitude - -13.362500)  asc ;
 
             if [ $new -eq 1 ];then
                 #clean album name (no nulls)
@@ -448,8 +449,8 @@ create_album (){
 
                 album_name=$(date -d @$current_date +'%Y%m%d_' )$(join_by ", " "${valid_names[@]}")
 
-		current_albumid=$(sqlite3 -batch $DB_FILE "select albumid from $ALBUM_TABLE where name='$album_name';")
-		if [ -z $current_albumid ];then 
+        current_albumid=$(sqlite3 -batch $DB_FILE "select albumid from $ALBUM_TABLE where name='$album_name';")
+        if [ -z $current_albumid ];then 
                     echo NEW album:  $album_name
                     sqlite3 -batch $DB_FILE " insert into $ALBUM_TABLE values('$album_name',null);"
                     current_albumid=$(sqlite3 -batch $DB_FILE " select albumid from $ALBUM_TABLE where name='$album_name';")
@@ -481,7 +482,10 @@ create_album (){
 
 join_by (){ local IFS="$1"; shift; echo "$*"; }
 
+# distance latitude1 longitude1 latitude2 longitude2
+# measures the distance in km between two coordinates
 distance (){
+
 t=$(awk -v la1="$1"  -v lo1="$2" -v la2="$3"  -v lo2="$4" 'BEGIN{
     D2R=0.017453292519943295
     earth=6371
@@ -544,6 +548,39 @@ albumathor -smash
 EOF
 }
 
+take_action(){
+#create album folders
+
+    local line=""
+    local tuple=""
+    local results=$(sqlite3 -batch $DB_FILE "select NAME,ALBUMID from $ALBUM_TABLE;")
+
+    while read line; do
+        IFS='|' read -ra tuple <<< "$line"
+        local album=${tuple[0]}
+        local id=${tuple[1]}
+        mkdir "$DESTINATION/$album"
+
+        local item_line=""
+        local item_tuple=""
+        local item_results=$(sqlite3 -batch $DB_FILE "select SourceFile,FileName from $MAIN_TABLE where albumid=$id;")
+        while read item_line; do
+
+            IFS='|' read -ra item_tuple <<< "$item_line"
+            local source=${item_tuple[0]}
+            local dest_file=${item_tuple[1]}
+
+            case $ACTION in
+                -s)
+                    ln -s "$source" "$DESTINATION/$album/$dest" 
+                    ;;
+            esac
+
+        done <<< "$item_results"
+                
+    done <<< "$results"
+}
+
 # Execution Starts here
 # ---------------------
 
@@ -568,9 +605,16 @@ case $1 in
         exit
         ;;
     -thor)
-        #DESTINATION="$2"
-        #{ [ -d $DESTINATION ] && [ -r "$DESTINATION" ] && [ -w "$DESTINATION" ] && [ -x "$DESTINATION" ] ;} || mkdir -p "$DESTINATION" || exit
-        create_album
+        ACTION=$2
+        DESTINATION="${3:-$DESTINATION}"
+        #remove ending slash
+        DESTINATION=${DESTINATION%/}
+        if [ -n "$ACTION" ] && [ -n "$DESTINATION" ]; then
+            [ -n "$DESTINATION" ] && { [ -d "$DESTINATION" ] && [ -r "$DESTINATION" ] && [ -w "$DESTINATION" ] && [ -x "$DESTINATION" ] ;} || mkdir -p "$DESTINATION" || { echo "Permissionn failed accessing $DESTINATION " && exit ;}
+            take_action
+        else
+            create_album
+        fi
         exit
         ;;
     -smash)
