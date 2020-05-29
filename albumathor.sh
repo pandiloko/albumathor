@@ -18,7 +18,6 @@ EOF
 
 create_gps_cache(){
     sqlite3 $GPS_FILE <<EOF
-
 BEGIN TRANSACTION;
 CREATE TABLE IF NOT EXISTS '$GPS_TABLE' (
     'LATITUDE' TEXT NOT NULL,
@@ -40,7 +39,6 @@ exists_checksum (){
     local sum=$2
     #search in db
     local out=$(sqlite3 -batch $DB_FILE "select * from $1 where BLAKE2='$sum';")
-
     [ -z "$out" ] && return 404
     return 0
 }
@@ -59,7 +57,6 @@ insert (){
     local tuple="$1"
     local bytesize="$2"
     local blake2="$3"
-
     if exists_checksum fotos $blake2 ;then
         return 302
     else
@@ -83,8 +80,8 @@ EOF
         local filename="${tuple[13]}"
         local gpsdatestamp="${tuple[24]}"
         local gpsdatetime="${tuple[25]}"
-        local gpslatitude=$(dmg2dd_lat "${tuple[31]}")
-        local gpslongitude=$(dmg2dd_long "${tuple[33]}")
+        local gpslatitude=$(convert_lalong "${tuple[31]}")
+        local gpslongitude=$(convert_lalong "${tuple[33]}")
         local gpstimestamp="${tuple[39]}"
 
         #FIX DATE
@@ -213,10 +210,8 @@ EOF
 # UPDATE players SET user_name='steven', age=32 WHERE user_name='steven';
 }
 
-
 create_album (){
 # select * from fotos Where CreateDate not like '-' order by CreateDate ASC;
-
 # select f.CreateDate,l.* from fotos f,locations l Where CreateDate not like '-' AND f.BLAKE2=l.BLAKE2 order by CreateDate ASC;
     local offset=0
     local batch=200
@@ -429,6 +424,7 @@ esac
 [ -f $GPS_FILE ] || create_gps_cache
 
 path=$(readlink -f "$1")
+
 #TODO:
 # check file/dir existence
 # check binaries existence
